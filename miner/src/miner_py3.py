@@ -696,6 +696,69 @@ def recursiveDecomposition(geneset,expressionData,minNumberGenes=6,pct_threshold
         shortSets.extend(unmixedFiltered)
     return shortSets
 
+def merge_cluster_list(cix,dist_mat,min_corr = 0.5):
+    from scipy import stats
+    import numpy as np
+    
+    corr_mat = []
+    for i in range(len(cix)):
+        corr_mat.append(list(dist_mat.loc[cix[i],:].mean(axis=0)))
+
+    corr_mat = np.vstack(corr_mat)
+
+    pairs = []
+    for i in range(corr_mat.shape[0]):
+        tmp_pairs = [i]
+        for j in range(i,corr_mat.shape[0]):
+            if len(pairs) > 0:
+                if j in np.hstack(pairs):
+                    continue
+            r, _ = stats.pearsonr(corr_mat[i,:],corr_mat[j,:])
+            if r>min_corr:
+                if i != j:
+                    tmp_pairs.append(j)
+
+        if len(pairs) > 0:
+            if i in np.hstack(pairs):
+                continue
+        pairs.append(tmp_pairs)
+
+    merged_clusters = []
+    for pair in pairs:
+        tmp_ext = []
+        for ix in pair:
+            tmp_ext.extend(cix[ix])
+        merged_clusters.append(tmp_ext)
+
+    corr_mat = []
+    for i in range(len(merged_clusters)):
+        corr_mat.append(list(dist_mat.loc[merged_clusters[i],:].mean(axis=0)))   
+    corr_mat = np.vstack(corr_mat)
+
+    best_matches = []
+    tf_ix = []
+    for i in range(dist_mat.shape[0]):
+        tmp_corr = pearson_array(corr_mat,np.array(dist_mat.iloc[i,:]))
+        if np.amax(tmp_corr) < 0.1:
+            continue
+        if np.isnan(np.amax(tmp_corr)):
+            continue
+        best_matches.append(np.argmax(tmp_corr))
+        tf_ix.append(dist_mat.index[i])
+
+    best_matches_df = pd.DataFrame(best_matches)
+    best_matches_df.index = tf_ix
+    best_matches_df.columns = ['cluster']
+
+    final_merged_clusters = []
+    for i in list(range(len(best_matches_df.cluster.unique()))):
+        tmp_hits = list(best_matches_df.index[np.where(best_matches_df.cluster==i)[0]])
+        final_merged_clusters.append(tmp_hits)
+
+    final_merged_clusters.sort(key = lambda s: -len(s))
+
+    return final_merged_clusters
+
 #def recursiveDecomposition(geneset,expressionData,minNumberGenes=6,pct_threshold=80):
 #
 #    unmixedFiltered = decompose(geneset,expressionData,minNumberGenes=minNumberGenes)   
@@ -883,6 +946,7 @@ def cluster(expressionData,minNumberGenes = 6,minNumberOverExpSamples=4,maxSampl
         genesMapped = []
         bestMapped = []
 
+        #Get the first 10 PCs of df (i.e., the expression subset)
         pca = PCA(10,random_state=random_state)
         principalComponents = pca.fit_transform(df.T)
         principalDf = pd.DataFrame(principalComponents)
@@ -913,6 +977,8 @@ def cluster(expressionData,minNumberGenes = 6,minNumberOverExpSamples=4,maxSampl
             stackGenes = np.hstack(genesMapped)
         except:
             stackGenes = []
+            
+        # filter out best-represented genes prior to next iteration
         residualGenes = list(set(df.index)-set(stackGenes))
         df = df.loc[residualGenes,:]
 
@@ -927,6 +993,7 @@ def cluster(expressionData,minNumberGenes = 6,minNumberOverExpSamples=4,maxSampl
             if len(numHits)>minNumberOverExpSamples:
                 bestHits.append(genesMapped[ix])
 
+        # filter out the best-represented samples prior to next iteration
         if len(bestMapped)>0:            
             countHits = Counter(np.hstack(bestMapped))
             ranked = countHits.most_common()
@@ -2268,9 +2335,9 @@ def univariate_comparison(subtypes,srv,expressionData,network_activity_diff,n_it
     sns.set(font_scale=1.5,style="whitegrid")
     fig = plt.figure(figsize=(16,4))
     p = sns.stripplot(data=boxplot_dataframe, x='Subtype', y='AUC',hue="Method",
-                      dodge=True,jitter=0.25,size=3)
+                      dodge=True,jitter=0.25,size=3,palette='viridis')
     ax = sns.boxplot(data=boxplot_dataframe, x='Subtype', y='AUC',hue="Method",
-                      dodge=True,fliersize=0)
+                      dodge=True,fliersize=0,palette='viridis')
     
     # Add transparency to colors
     for patch in ax.artists:
@@ -2285,9 +2352,10 @@ def univariate_comparison(subtypes,srv,expressionData,network_activity_diff,n_it
         
     return boxplot_dataframe, boxplot_data, fig
 
-def univariate_survival(subtypes,optimized_survival_parameters,network_activity_diff,srv,results_directory=None):
+def univariate_survival(subtypes,optimized_survival_parameters,network_activity_diff,srv,results_directory=None,font_scale=1.5):
     import seaborn as sns
-    sns.set(font_scale=1.5,style="whitegrid")
+    
+    sns.set(font_scale=font_scale,style="whitegrid")
     ncols=len(subtypes.keys())
     fig = plt.figure(figsize=(16, 4))
     for s in range(ncols):
@@ -2308,7 +2376,7 @@ def univariate_survival(subtypes,optimized_survival_parameters,network_activity_
         kmplot(srv,groups,labels = ["Activated","Inactivated"],
                      xlim_=None,filename=None,color=["r","b"],lw=3,alpha=1,fs=20,subplots=True)
 
-        ax.set_ylim(-0.05,1.05)
+        ax.set_ylim(-0.05,100.05)
         ax.grid(color='w', linestyle='--', linewidth=1)
 
         # Hide the right and top spines
@@ -2423,12 +2491,13 @@ def univariate_survival(subtypes,optimized_survival_parameters,network_activity_
 def composite_survival_figure(univariate_comparison_df,subtypes,
                              optimized_survival_parameters,network_activity_diff,
                              expressionData,srv,gene_clusters,states,
-                             results_directory=None):
+                             results_directory=None,gene_names=None):
 
     import seaborn as sns
     # Instantiate figure
     fig3 = plt.figure(constrained_layout=True,figsize=(16,12))
-
+    sns.set(font_scale=1.5,style="whitegrid")
+    
     # Heatmaps
     gs = fig3.add_gridspec(4, 5)
     f3_ax0 = gs[0:2,:].subgridspec(1, 2)
@@ -2456,25 +2525,38 @@ def composite_survival_figure(univariate_comparison_df,subtypes,
     f3_ax1.set_xlabel("")
     #f3_ax1.set_yticklabels(["",0,0.2,0.4,0.6,0.8,1.0,""])
     
-    sns.set(font_scale=1.5,style="whitegrid")
 
     sns.stripplot(data=univariate_comparison_df, x='Subtype', y='AUC',hue="Method",
-                      dodge=True,jitter=0.25,size=3)
+                      dodge=True,jitter=0.25,size=3,palette={"Expression":'#0055b3',"Activity":'#00C65E'})#,palette='viridis'
     sns.boxplot(data=univariate_comparison_df, x='Subtype', y='AUC',hue="Method",
-                      dodge=True,fliersize=0)
+                      dodge=True,fliersize=0,palette={"Expression":'#0055b3',"Activity":'#00C65E'})
 
     # Add transparency to colors
-    for patch in f3_ax1.artists:
-        r, g, b, a = patch.get_facecolor()
-        patch.set_facecolor((r, g, b, 0.3))
+    #for patch in f3_ax1.artists:
+    #    r, g, b, a = patch.get_facecolor()
+    #    patch.set_facecolor((r, g, b, 0.9))
 
+    #Black and white boxplots
+    plt.setp(f3_ax1.artists, edgecolor = 'k', facecolor='w')
+    plt.setp(f3_ax1.lines, color='k')
+    
     handles, labels = f3_ax1.get_legend_handles_labels()
     plt.legend(handles[2:], labels[2:],fontsize=14,loc='best')
 
     # Survival plots
+    f3_ax2 = fig3.add_subplot(gs[3, :])
+    f3_ax2.set_yticklabels("")
+    f3_ax2.set_xticklabels("")
+    f3_ax2.grid(False)
+    f3_ax2.spines['left'].set_visible(False)
+    f3_ax2.spines['top'].set_visible(False)
+    f3_ax2.spines['right'].set_visible(False)
+    f3_ax2.spines['bottom'].set_visible(False)
+    
     ncols=len(subtypes.keys())
     hr_groups = []
     lr_groups = []
+
     for s in range(ncols):
         subtype_name = list(optimized_survival_parameters.keys())[s]
         most_predictive_gene = optimized_survival_parameters[subtype_name]['gene']
@@ -2494,9 +2576,9 @@ def composite_survival_figure(univariate_comparison_df,subtypes,
 
         ax = fig3.add_subplot(gs[3,s])
         kmplot(srv,groups,labels = ["Activated","Inactivated"],
-                     xlim_=None,filename=None,color=["r","b"],lw=3,alpha=1,fs=20,subplots=True)
+                     xlim_=None,filename=None,color=['red','blue'],lw=3,alpha=1,fs=20,subplots=True)
 
-        ax.set_ylim(-0.05,1.05)
+        ax.set_ylim(-0.05,100.05)
         ax.grid(color='w', linestyle='--', linewidth=1)
 
         # Hide the right and top spines
@@ -2512,15 +2594,30 @@ def composite_survival_figure(univariate_comparison_df,subtypes,
 
         timeline = list(srv.loc[ordered_patients,srv.columns[0]])
         max_time = max(timeline)
-        ax.set_xticks(np.arange(0, max_time, 500))
-        ax.set_xlabel("Days")
+        #ax.set_xticks(np.arange(0, max_time, 500),rotation=45)
+        ax.set_xticklabels(np.arange(0, round(max_time/30.5), round(500/30.5)))
+        ax.set_xlabel("Weeks")
         if s==0:
             ax.set_ylabel("Progression-free (%)")
-            ax.set_yticklabels(np.arange(-20, 120, 20))
+            #ax.set_yticklabels(np.arange(-20, 120, 20))
 
         if s>0:
-            ax.set_yticklabels("")
+            ax.set_ylabel("")
+        
+        if gene_names is None:
+            gene_name = most_predictive_gene
+        elif gene_names is not None:
+            gene_name = gene_names[s]
+        ax.text(0.33, 1.05, subtype_name+" +\n"+gene_name, transform=ax.transAxes, 
+                size=16)
 
+    #Add letters
+    import string
+    axs = [f3_ax00,f3_ax01,f3_ax1,f3_ax2]
+    for n, ax in enumerate(axs):  
+        ax.text(-0.1, 1.00, string.ascii_uppercase[n], transform=ax.transAxes, 
+                size=18, weight='bold')
+    
     if results_directory is not None:
         plt.savefig(os.path.join(results_directory,"UnivariateSurvival.pdf"),bbox_inches="tight")
 
@@ -3884,7 +3981,7 @@ def parallelSurvivalAnalysis(expressionDf,survivalData,numCores=5):
 #
 #    return
 
-def kmplot(srv,groups,labels,legend=None,title=None,xlim_=None,filename=None,color=None,lw=1,alpha=1,fs=20,subplots=False):
+def kmplot(srv,groups,labels,legend=None,title=None,xlim_=None,filename=None,color=None,lw=1,alpha=1,fs=None,subplots=False):
 
     for i in range(len(groups)):
         group = groups[i]
@@ -3910,11 +4007,20 @@ def kmplot(srv,groups,labels,legend=None,title=None,xlim_=None,filename=None,col
                 plt.step(duration,kme,LineWidth=lw,alpha=alpha,label=label)       
 
         #continue
+    
     plt.xlabel("Time (days)")
     plt.ylabel("Progression-free (%)")
     
+    if fs is not None:
+        plt.xlabel("Time (days)",fontsize=fs)
+        plt.ylabel("Progression-free (%)",fontsize=fs)
+        plt.xticks(fontsize=fs)
+        plt.yticks(fontsize=fs)
+    
     if title is not None:
         plt.title(title)
+        if fs is not None:
+            plt.title(title,fontsize=fs)
     
     if legend is not None:
         plt.legend(loc='upper right')
@@ -4431,6 +4537,8 @@ def causalNetworkAnalysis(regulon_matrix,expression_matrix,reference_matrix,muta
                 bicluster_ps = significant_regulon_ps[alignment_mask]  
                 fraction_aligned = np.array([len(alignment_mask)/float(len(mask)) for i in range(len(alignment_mask))])
                 fraction_effected = np.array([len(alignment_mask)/float(len(d_neglogps)) for i in range(len(alignment_mask))]) #New addition
+                n_downstream = np.array([len(d_neglogps) for i in range(len(alignment_mask))])
+                n_diff_exp = np.array([len(mask)for i in range(len(alignment_mask))])
 
                 results_ = pd.DataFrame(
                     np.vstack(
@@ -4445,7 +4553,9 @@ def causalNetworkAnalysis(regulon_matrix,expression_matrix,reference_matrix,muta
                             bicluster_ts,
                             bicluster_ps,
                             fraction_aligned,
-                            fraction_effected
+                            fraction_effected,
+                            n_downstream,
+                            n_diff_exp
                         ]
                     ).T
                 )
@@ -4461,7 +4571,9 @@ def causalNetworkAnalysis(regulon_matrix,expression_matrix,reference_matrix,muta
                     "Regulon_stratification_t-statistic",
                     "-log10(p)_Regulon_stratification",
                     "Fraction_of_edges_correctly_aligned",
-                    "Fraction_of_aligned_and_diff_exp_edges" #New addition
+                    "Fraction_of_aligned_and_diff_exp_edges",
+                    "number_downstream_regulons",
+                    "number_differentially_expressed_regulons"#New addition
                 ]
 
                 results_.index = bicluster_list
@@ -6484,6 +6596,24 @@ def wilcox_df(df,phenotype1,phenotype2):
     
     return wilcoxon_results
 
+def wilcox_binary_df(bin_df,cont_df,pr_key):
+    wilcox_stats = []
+    wilcox_ps = []
+    for i in bin_df.index:
+        phenotype1 = getMutations(i,bin_df)
+        phenotype2 = setdiff(bin_df.columns,phenotype1)
+        wilcox = stats.ranksums(cont_df.loc[pr_key,phenotype1],cont_df.loc[pr_key,phenotype2])
+
+        wilcox_stats.append(wilcox[0])
+        wilcox_ps.append(wilcox[1])
+
+    wilcox_results = pd.DataFrame(np.vstack([wilcox_stats,wilcox_ps]).T)
+    wilcox_results.columns = ["statistic","p-value"]
+    wilcox_results.index = bin_df.index
+    wilcox_results.sort_values(by="statistic",ascending=False,inplace=True)
+    
+    return wilcox_results
+
 # =============================================================================
 # 
 # =============================================================================
@@ -6599,6 +6729,38 @@ def dict_to_jaccard(coverage_dict):
     
     return jaccard_matrix
 
+def df_to_jaccard(df):
+    
+    import numpy as np
+    index = list(df.index)
+
+    #Generate pairwise matrix of Jaccard distance between TFs in network
+    jaccard_matrix = np.zeros((len(index),len(index)))
+    for i in range(len(index)):
+        key1 = index[i]
+        tgts1 = df.columns[df.loc[key1,:]==1]
+        for j in range(i,len(index)):
+            key2 = index[j]
+            tgts2 = df.columns[df.loc[key2,:]==1]
+            len_intersection = len(intersect(tgts1,tgts2))
+            len_union = len(union(tgts1,tgts2))
+            if len_union == 0:
+                jaccard = 0
+            if len_intersection == 0:
+                jaccard = 0
+            if len_union>0:
+                jaccard = float(len_intersection)/len_union
+
+            jaccard_matrix[i,j] = jaccard
+            jaccard_matrix[j,i] = jaccard
+
+    #Format as dataframe
+    jaccard_matrix = pd.DataFrame(jaccard_matrix)
+    jaccard_matrix.index = index
+    jaccard_matrix.columns = index
+    
+    return jaccard_matrix
+
 def cluster_distance_matrix(dist_matrix,pct_threshold=80):
     import numpy as np
 
@@ -6705,3 +6867,505 @@ def master_partners(master_regulator_list,tf_network):
 
     return loops
 
+def causal_significance_test(causal_results,m_matrix,mut,
+                             regulonDf,eigengenes,expressionData,network_activity_diff,
+                             n_iter=10):
+    
+    import time
+    from scipy import stats
+    import pandas as pd
+    import numpy as np
+    
+    t1 = time.time()
+    causal_results_subset = causal_results[causal_results.Mutation==mut]
+    regulon_subset = list(causal_results_subset.index)
+
+    aligned_results = []
+    diff_aligned_results = []
+    for iteration in range(n_iter):
+        #identify subtypes
+        mut_pats = getMutations(mut,m_matrix)
+
+        #randomize patients
+        mut_pats = sample(m_matrix.columns,n=len(mut_pats),replace=False)
+        wt_pats = setdiff(m_matrix.columns,mut_pats)
+
+        tmp_aligned_results = []
+        tmp_diff_aligned_results = []
+        for reg in regulon_subset:
+
+            #get regulator
+            regulator = regulonDf[regulonDf.Regulon_ID==int(reg)].Regulator.unique()[0]
+            #get regulons downstream of regulator
+            downstream_regulons = regulonDf[regulonDf.Regulator==regulator].Regulon_ID.unique().astype(str)
+
+            #downstream differential expression
+            diff_exp_stat = []
+            diff_exp_p = []
+            regreg_r = []
+            regreg_p = []
+            for dr in downstream_regulons:
+                #differential expression
+                s, p = stats.ranksums(eigengenes.loc[dr,mut_pats],
+                               eigengenes.loc[dr,wt_pats])
+                diff_exp_stat.append(s)
+                diff_exp_p.append(p)
+                #correlation to regulator
+                if regulator in network_activity_diff.index:
+                    r, pval = stats.spearmanr(network_activity_diff.loc[regulator,:],
+                                             eigengenes.loc[dr,:])
+                else:
+                    r, pval = stats.spearmanr(expressionData.loc[regulator,:],
+                                             eigengenes.loc[dr,:])
+                regreg_r.append(r)
+                regreg_p.append(pval)
+
+            #mutation regulator edge
+            if regulator in network_activity_diff.index:
+                mutreg_stat, mutreg_p = stats.ranksums(network_activity_diff.loc[regulator,mut_pats],
+                                   network_activity_diff.loc[regulator,wt_pats]) 
+            else:
+                mutreg_stat, mutreg_p = stats.ranksums(expressionData.loc[regulator,mut_pats],
+                                   expressionData.loc[regulator,wt_pats]) 
+
+            mutreg_edge = np.sign(mutreg_stat)
+
+            #regulator regulon edge
+            regreg_edge = np.sign(regreg_r)
+
+            #mutation-regulator-regulon edge
+            mut_reg_reg = mutreg_edge*regreg_edge
+
+            #alignment mask
+            aligned = np.array(mut_reg_reg==np.sign(diff_exp_stat))
+
+            #diff exp mask
+            diff_mask = np.array(np.array(diff_exp_p)<0.05)
+
+            #diff exp and aligned mask
+            diff_aligned = aligned*diff_mask
+
+            #Fraction differentially expressed and aligned
+            fraction_diff_aligned = np.mean(diff_aligned)
+
+            #Fraction aligned, regardless of differential expression
+            fraction_aligned = np.mean(aligned)
+
+            #append tmp results
+            tmp_aligned_results.append(fraction_aligned)
+            tmp_diff_aligned_results.append(fraction_diff_aligned)
+
+        #append results
+        aligned_results.append(tmp_aligned_results)
+        diff_aligned_results.append(tmp_diff_aligned_results)
+
+
+    aligned_results_df = pd.DataFrame(np.vstack(aligned_results).T)
+    aligned_results_df.index = regulon_subset
+    diff_aligned_results_df = pd.DataFrame(np.vstack(diff_aligned_results).T)
+    diff_aligned_results_df.index = regulon_subset
+
+    t2 = time.time()
+
+    print((t2-t1)/60.)
+
+    #calculate permutation statistics
+    perm_mean = diff_aligned_results_df.mean(axis=1)
+    perm_std = diff_aligned_results_df.std(axis=1)
+    perm_95 = perm_mean+2*perm_std
+
+    #collect results
+    results = pd.concat([perm_mean,perm_std,perm_95,causal_results_subset.Fraction_of_aligned_and_diff_exp_edges],axis=1)
+    results.columns = ["mean","std","upper_95","Fraction_of_aligned_and_diff_exp_edges"]
+
+    return results 
+
+def make_data_df(results,cutoffs):
+    
+    import numpy as np
+    #instantiate lists
+    lbls = []
+    vals = []
+    thresh = []
+    sig = []
+    flows = []
+
+    for cutoff in cutoffs:
+        #subset results by cutoff
+        tmp_results = results[results.Fraction_of_aligned_and_diff_exp_edges>cutoff]
+        tmp_significant_calls = tmp_results[tmp_results.Fraction_of_aligned_and_diff_exp_edges>tmp_results.upper_95]
+
+        #retrieve permutation and observed values
+        tmp_results.upper_95.values
+        tmp_results.Fraction_of_aligned_and_diff_exp_edges.values
+
+        #calculate proportion of significant hits
+        passed = tmp_significant_calls.shape[0]/tmp_results.shape[0]
+
+        #stack labels
+        kind = np.hstack([["Permutation" for i in range(len(tmp_results.upper_95.values))],
+                         ["Observed" for i in range(len(tmp_results.Fraction_of_aligned_and_diff_exp_edges.values))]])
+        lbls.extend(kind)
+
+        #stack values
+        values = np.hstack([tmp_results.upper_95.values,
+                            tmp_results.Fraction_of_aligned_and_diff_exp_edges.values])
+        vals.extend(values)
+
+        #stack cutoff
+        cut = [cutoff for i in range(len(values))]
+        thresh.extend(cut)
+
+        #stack number of flows
+        n_flow = tmp_results.shape[0]
+        num_flows = [n_flow for i in range(len(values))]
+        flows.extend(num_flows)
+
+        #stack fraction passed
+        sig_fraction = [passed for i in range(len(values))]
+        sig.extend(sig_fraction)
+
+
+    data_df = pd.DataFrame(np.vstack([vals,lbls,thresh,flows,sig]).T)
+    data_df.columns = ["value","type","cutoff","flows","significant"]
+    data_df["value"] = pd.to_numeric(data_df["value"])
+    #data_df["cutoff"] = pd.to_numeric(data_df["cutoff"])
+    data_df["flows"] = pd.to_numeric(data_df["flows"])
+    data_df["significant"] = pd.to_numeric(data_df["significant"])
+    
+    return data_df
+# =============================================================================
+# Functions related to pathway enrichments
+# =============================================================================
+
+def chi_square(binary_1,binary_2,table=False):
+    from scipy.stats import chi2_contingency
+    obs = pd.crosstab(binary_1,binary_2)
+    chi2, p, dof, ex = chi2_contingency(obs, correction=False)
+    #Add directionality to chisq statistic
+    sum1 = obs.iloc[0,0]+obs.iloc[1,1]
+    sum2 = obs.iloc[0,1]+obs.iloc[1,0]
+
+    sign = 1
+    if sum2>sum1:
+        sign=-1
+    chi2 = sign*chi2
+    
+    if table is True:
+        return chi2, p, obs
+
+    return chi2, p
+
+def chisquare_binary_df(bin_df,ref_df,pr_key):
+    chisq_stats = []
+    chisq_ps = []
+    for i in bin_df.index:
+        phenotype1 = getMutations(i,bin_df)
+        phenotype2 = setdiff(bin_df.columns,phenotype1)
+
+        a = ref_df.loc[pr_key,phenotype1]>0
+        bin_vector = (1*a)
+        count_ones_a = sum(bin_vector)
+        count_zeros_a = len(bin_vector)-count_ones_a
+
+        b = ref_df.loc[pr_key,phenotype2]>0
+        bin_vector = (1*b)
+        count_ones_b = sum(bin_vector)
+        count_zeros_b = len(bin_vector)-count_ones_b
+
+        cont_tbl = np.array([[count_ones_a,count_zeros_a],[count_ones_b,count_zeros_b]])
+        chi2, p, dof, ex = stats.chi2_contingency(cont_tbl)
+
+        sign = ref_df.loc[pr_key,phenotype1].mean()-ref_df.loc[pr_key,phenotype2].mean()
+        if sign==0:
+            sign = 1
+        else:
+            sign = sign/abs(sign)
+           
+        chi2 = sign*chi2
+        chisq_stats.append(chi2)
+        chisq_ps.append(p)
+
+    chisq_results = pd.DataFrame(np.vstack([chisq_stats,chisq_ps]).T)
+    chisq_results.columns = ["statistic","p-value"]
+    chisq_results.index = bin_df.index
+    chisq_results.sort_values(by="statistic",ascending=False,inplace=True)
+    
+    return chisq_results
+
+def decision_tree_predictor(ref_df,target,test_proportion=0.35,rs=12,depth=2,criterion="entropy"):
+    
+    #import functions
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.model_selection import train_test_split
+    #Format for prediction
+    predictionMat = pd.concat([ref_df.T,target],axis=1)
+
+    #Convert to numpy arrays for sklearn
+    X = np.array(predictionMat.iloc[:,0:-1])
+    Y = np.array(predictionMat.iloc[:,-1])
+    X = X.astype(float)
+    Y = Y.astype('int')
+
+    #List sample names so that the training and test labels can be retrieved
+    samples_ = np.array(predictionMat.index)
+
+    #Split into training and test sets
+    X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size = test_proportion, random_state = rs)
+    X_train_columns, X_test_columns, y_train_samples, y_test_samples = train_test_split(X, samples_, test_size = test_proportion, random_state = rs)
+
+    #Generate decision tree classifier
+    clf = DecisionTreeClassifier(criterion = criterion, 
+                                 random_state = rs, 
+                                 max_depth=depth, 
+                                 min_samples_leaf=3)
+    clf.fit(X_train, y_train)
+
+    return clf, X_train, X_test, y_train, y_test, y_train_samples, y_test_samples
+
+def visualize_decision_tree(clf,filename=None):
+    #Visualize decision tree
+    from sklearn import tree
+    from sklearn.externals.six import StringIO  
+    import pydot 
+    from graphviz import Source
+
+    dot_data = StringIO() 
+    tree.export_graphviz(clf, out_file=dot_data) 
+    graph = pydot.graph_from_dot_data(dot_data.getvalue()) 
+
+    # visualize decision tree
+    graph[0].set_graph_defaults(size = "\"8,8\"")
+    decisionTree = Source(graph[0].to_string())
+    
+    if filename is not None:
+        graph[0].write_pdf(filename)
+    
+    return decisionTree
+
+def combinatorial_risk(target,reference_matrix,covariate_matrix,primary_variable,
+                       min_group_size=5,min_mean_size=10,sort=True,target_type="continuous"):
+
+    #Determine primary variable type
+    indicator = len(set(reference_matrix.loc[primary_variable,:]))
+    if indicator <= 2:
+        primary_type = "binary"
+    elif indicator >2:
+        primary_type = "categorical"
+
+    #Get target variable names outside of loop to save time
+    target_index = target.index
+    target_mean = target.mean()
+
+    #Instantiate output lists
+    kw_p_list = []
+    index_list = []
+    mean_list = []
+
+    phenotypes = []
+    #Split population according to primary variable
+    if primary_type == "binary":
+        phenotype1 = getMutations(primary_variable,reference_matrix)
+        phenotypes.append(phenotype1)
+        phenotypes.append(setdiff(reference_matrix.columns,phenotype1))
+
+    if primary_type == "categorical":
+        for cat in list(set(reference_matrix.loc[primary_variable,:])):
+            phenotypes.append(reference_matrix.columns[
+                np.where(reference_matrix.loc[primary_variable,:]==cat)[0]])
+
+    if primary_type == "continuous":
+        phenotypes.append(reference_matrix.columns)
+
+    #Split population into subtypes based upon primary and categorical variables
+    for covariate in covariate_matrix.index:
+        interaction_subtypes = []
+        cats = list(set(covariate_matrix.loc[covariate,:]))
+        for cat in cats:
+            subtype = covariate_matrix.columns[
+                np.where(covariate_matrix.loc[covariate,:]==cat)[0]]
+            for phenotype in phenotypes:
+                cat_subtype = intersect(phenotype,subtype)
+                interaction_subtypes.append(cat_subtype)
+
+        if covariate == primary_variable:
+            interaction_subtypes = phenotypes
+
+        # Perform statistical test on subtypes
+        if target_type == "continuous":
+            #kruskal-wallis of subtypes
+            kw_subtypes = []
+            lenkw = 0
+            for group in interaction_subtypes:
+                kw_subtype = intersect(target_index,group)
+                if len(kw_subtype) >= min_group_size:
+                    kw_subtypes.append(target[kw_subtype])
+                    lenkw+=1
+            if lenkw >= 2:
+                kw_stat, kw_p = stats.kruskal(*kw_subtypes)
+                kw_p_list.append(kw_p)
+                index_list.append(covariate)
+                means = [np.mean(i) for i in kw_subtypes if len(intersect(i.index,target_index))>=min_mean_size]
+                max_mean = max(means)
+                mean_list.append(max_mean)
+            elif lenkw < 2:
+                kw_p_list.append(1)
+                index_list.append(covariate)
+                mean_list.append(target_mean)
+                continue
+
+
+    results = pd.DataFrame(np.vstack([kw_p_list,mean_list]).T)
+    results.index = index_list
+    results.columns = ["p-value","highest_risk"]
+    if sort is True:
+        results.sort_values(by="p-value",ascending=True,inplace=True)
+
+    return results
+
+def subset_survival(patients,srv):
+    intersection = list(set(patients)&set(srv.index))
+    tmp_srv = srv.loc[intersection,:]
+    tmp_srv.sort_values(by="GuanScore",ascending=False,inplace=True)
+    return tmp_srv
+
+def check_nans(lst,pass_only=True):
+    nans = [i for i in range(len(lst)) if type(lst[i])==float]
+    pass_ = list(set(list(range(len(lst))))-set(nans))
+    
+    if pass_only is False:
+        return (pass_,nans)
+    return pass_
+
+def scenic_regulons_to_df(regulons):
+    import pandas as pd
+    import numpy as np
+
+    # Write scenic regulon information into miner format
+    index_col = []
+    tf_col = []
+    gene_col = []
+    for i in range(len(regulons)):
+        tmp_index = regulons[i].name
+        tmp_tf = tmp_index.split("(")[0]
+        tmp_regulon = list(dict(regulons[i].gene2weight).keys())
+        for j in range(len(tmp_regulon)):
+            tf_id = tmp_tf
+            gene_id = tmp_regulon[j]
+            index_col.append(tmp_index)
+            tf_col.append(tf_id)
+            gene_col.append(gene_id)
+
+    #Convert output to dataframe
+    scenic_regulonDf = pd.DataFrame(np.vstack([index_col,tf_col,gene_col]).T)
+    scenic_regulonDf.columns = ["Regulon_ID","Regulator","Gene"]
+    
+    return scenic_regulonDf
+
+def pairwise_distance(df):
+    from sklearn.metrics import pairwise_distances
+    sample_distances = pairwise_distances(np.array(df.T),metric="euclidean")
+    sample_distances = pd.DataFrame(sample_distances)
+    sample_distances.columns = df.columns
+    sample_distances.index = df.columns
+    
+    return sample_distances
+
+def permute_matrix(unscrambled):
+    import pandas as pd
+    import numpy as np
+    #Generate permutation matrix
+    permuted_mutations = pd.DataFrame(np.zeros(unscrambled.shape))
+    permuted_mutations.index = unscrambled.index
+    permuted_mutations.columns = unscrambled.columns
+    num_muts = list(unscrambled.sum(axis=1))
+
+    for i in range(permuted_mutations.shape[0]):
+        ix = permuted_mutations.index[i]
+        rand_muts = sample(unscrambled.columns,int(num_muts[i]),replace=False)
+        permuted_mutations.loc[ix,rand_muts] = 1
+    return permuted_mutations
+
+
+def optimize_causal_flows(task):
+    
+    causal_results,mutation_matrix,regulonDf,eigengenes,expressionData,network_activity_diff,n_iter,cutoff=task[1]
+    
+    #input task list, output dataframe
+    all_muts = causal_results.Mutation.unique()
+    tmp_mut_list = intersect(all_muts,mutation_matrix.index)
+    mut_list = tmp_mut_list[task[0][0]:task[0][1]]
+
+    mut_names = []
+    sig_flow_results = []
+    for i in range(len(mut_list)):
+        mut = mut_list[i]
+        tmp_causal = causal_significance_test(causal_results,mutation_matrix,mut,
+                                 regulonDf,eigengenes,expressionData,network_activity_diff,
+                                 n_iter=n_iter)
+
+        #test significance against optimized threshold
+        tmp_results = tmp_causal[tmp_causal.Fraction_of_aligned_and_diff_exp_edges>cutoff]
+        if tmp_results.shape[0]>0:
+            tmp_significant_calls = tmp_results[tmp_results.Fraction_of_aligned_and_diff_exp_edges>tmp_results.upper_95]
+            if tmp_significant_calls.shape[0]==0:
+                continue
+            
+            mut_names.append(mut)
+            #list regulators
+            regulators = [
+                regulonDf[regulonDf.Regulon_ID==int(reg)]["Regulator"].unique()[0] 
+                for reg in tmp_significant_calls.index
+            ]
+            #format significant causal flows
+            tmp_cm_df = pd.DataFrame(list(zip(
+                [mut for i in range(tmp_significant_calls.shape[0])],
+                regulators,
+                tmp_significant_calls.index)))
+            tmp_cm_df.columns = ["Mutation","Regulator","Regulon"]
+
+            #add dataframe to list for concatenation
+            sig_flow_results.append(tmp_cm_df)
+   
+    if len(sig_flow_results)==0:
+        sig_flow_results = pd.DataFrame([[],[],[]]).T
+        sig_flow_results.columns = ["Mutation","Regulator","Regulon"]
+
+    final_cm_results = pd.concat(sig_flow_results,axis=0)
+        
+    return final_cm_results
+        
+def parallel_causal_significance(causal_results,
+                                 mutation_matrix,
+                                 regulonDf,
+                                 eigengenes,
+                                 expressionData,
+                                 network_activity_diff,
+                                 n_iter=10,
+                                 cutoff=0.2,
+                                 n_cores = 5,
+                                 savefile=None):
+    
+    #start timer
+    import time
+    t_start = time.time()
+    #filter causal flows by optimized threshold
+    all_muts = causal_results.Mutation.unique()
+    tmp_mut_list = intersect(all_muts,mutation_matrix.index)
+    print("Analyzing {:d} mutations across {:d} threads".format(len(tmp_mut_list),n_cores))
+
+    taskSplit = splitForMultiprocessing(tmp_mut_list,n_cores)
+    taskData = (causal_results,mutation_matrix,regulonDf,eigengenes,
+                expressionData,network_activity_diff,n_iter,cutoff)
+    tasks = [[taskSplit[i],taskData] for i in range(len(taskSplit))]
+    output = multiprocess(optimize_causal_flows,tasks)
+    results = pd.concat(output,axis=0)
+    
+    t_end = time.time()
+    
+    print("completed analysis in {:.2f} minutes".format((t_end-t_start)/60.))
+    
+    if savefile is not None:
+        results.to_csv(savefile)
+        
+    return results
