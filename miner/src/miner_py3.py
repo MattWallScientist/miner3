@@ -1694,6 +1694,76 @@ def matrix_to_dictionary(matrix,threshold=0.5):
     primaryDictionary = {key:matrix.columns[np.where(matrix.loc[key,:]>=threshold)[0]] for key in matrix.index}
     return primaryDictionary
 
+# def f1Decomposition(sampleMembers=None,thresholdSFM=0.333,sampleFrequencyMatrix=None):
+#     # thresholdSFM is the probability cutoff that makes the density of the binary similarityMatrix = 0.15
+#     # sampleMembers is a dictionary with features as keys and members as elements
+
+#     # sampleFrequencyMatrix[i,j] gives the probability that sample j appears in a cluster given that sample i appears
+#     if sampleFrequencyMatrix is None:
+#         sampleFrequencyMatrix = sampleCoincidenceMatrix(sampleMembers,freqThreshold = thresholdSFM,frequencies=True)
+#     # similarityMatrix is defined such that similarityMatrix[i,j] = 1 iff sampleFrequencyMatrix[i,j] >= thresholdSFM
+#     similarityMatrix = sampleFrequencyMatrix*sampleFrequencyMatrix.T
+#     similarityMatrix[similarityMatrix<thresholdSFM] = 0
+#     similarityMatrix[similarityMatrix>0] = 1
+#     # remainingMembers is the set of set of unclustered members
+#     remainingMembers = set(similarityMatrix.index)
+#     # probeSample is the sample that serves as a seed to identify a cluster in a given iteration
+#     probeSample = similarityMatrix.index[np.argmax(np.array(similarityMatrix.sum(axis=1)))]
+#     # members are the samples that satisfy the similarity condition with the previous cluster or probeSample
+#     members = set(similarityMatrix.index[np.where(similarityMatrix[probeSample]==1)[0]])
+#     # nonMembers are the remaining members not in the current cluster
+#     nonMembers = remainingMembers-members
+#     # instantiate list to collect clusters of similar members
+#     similarityClusters = []
+#     # instantiate f1 score for optimization
+#     f1 = 0
+
+#     for iteration in range(1500):
+
+#         predictedMembers = members
+#         predictedNonMembers = remainingMembers-predictedMembers
+
+#         sumSlice = np.sum(similarityMatrix.loc[:,list(predictedMembers)],axis=1)/float(len(predictedMembers))
+#         members = set(similarityMatrix.index[np.where(sumSlice>0.8)[0]])
+
+#         if members==predictedMembers:
+#             similarityClusters.append(list(predictedMembers))
+#             if len(predictedNonMembers)==0:
+#                 break    
+#             similarityMatrix = similarityMatrix.loc[predictedNonMembers,predictedNonMembers]
+#             probeSample = np.argmax(similarityMatrix.sum(axis=1))
+#             members = set(similarityMatrix.index[np.where(similarityMatrix[probeSample]==1)[0]])
+#             remainingMembers = predictedNonMembers
+#             nonMembers = remainingMembers-members
+#             f1 = 0
+#             continue
+
+#         nonMembers = remainingMembers-members
+#         TP = len(members&predictedMembers)
+#         FN = len(predictedNonMembers&members)
+#         FP = len(predictedMembers&nonMembers)
+#         tmpf1 = TP/float(TP+FN+FP)
+
+#         if tmpf1 <= f1:
+#             similarityClusters.append(list(predictedMembers))
+#             if len(predictedNonMembers)==0:
+#                 break
+#             similarityMatrix = similarityMatrix.loc[predictedNonMembers,predictedNonMembers]
+#             probeSample = np.argmax(similarityMatrix.sum(axis=1))
+#             members = set(similarityMatrix.index[np.where(similarityMatrix[probeSample]==1)[0]])
+#             remainingMembers = predictedNonMembers
+#             nonMembers = remainingMembers-members
+#             f1 = 0
+#             continue   
+
+#         elif tmpf1 > f1:
+#             f1 = tmpf1
+#             continue
+    
+#     similarityClusters.sort(key = lambda s: -len(s))
+
+#     return similarityClusters
+
 def f1Decomposition(sampleMembers=None,thresholdSFM=0.333,sampleFrequencyMatrix=None):
     # thresholdSFM is the probability cutoff that makes the density of the binary similarityMatrix = 0.15
     # sampleMembers is a dictionary with features as keys and members as elements
@@ -1723,7 +1793,8 @@ def f1Decomposition(sampleMembers=None,thresholdSFM=0.333,sampleFrequencyMatrix=
         predictedMembers = members
         predictedNonMembers = remainingMembers-predictedMembers
 
-        sumSlice = np.sum(similarityMatrix.loc[:,list(predictedMembers)],axis=1)/float(len(predictedMembers))
+        tmp_overlap = intersect(predictedMembers,similarityMatrix.columns)
+        sumSlice = np.sum(similarityMatrix.loc[:,tmp_overlap],axis=1)/float(len(tmp_overlap))
         members = set(similarityMatrix.index[np.where(sumSlice>0.8)[0]])
 
         if members==predictedMembers:
@@ -1731,7 +1802,7 @@ def f1Decomposition(sampleMembers=None,thresholdSFM=0.333,sampleFrequencyMatrix=
             if len(predictedNonMembers)==0:
                 break    
             similarityMatrix = similarityMatrix.loc[predictedNonMembers,predictedNonMembers]
-            probeSample = np.argmax(similarityMatrix.sum(axis=1))
+            probeSample = similarityMatrix.sum(axis=1).idxmax()
             members = set(similarityMatrix.index[np.where(similarityMatrix[probeSample]==1)[0]])
             remainingMembers = predictedNonMembers
             nonMembers = remainingMembers-members
@@ -1749,7 +1820,7 @@ def f1Decomposition(sampleMembers=None,thresholdSFM=0.333,sampleFrequencyMatrix=
             if len(predictedNonMembers)==0:
                 break
             similarityMatrix = similarityMatrix.loc[predictedNonMembers,predictedNonMembers]
-            probeSample = np.argmax(similarityMatrix.sum(axis=1))
+            probeSample = similarityMatrix.sum(axis=1).idxmax()
             members = set(similarityMatrix.index[np.where(similarityMatrix[probeSample]==1)[0]])
             remainingMembers = predictedNonMembers
             nonMembers = remainingMembers-members
@@ -1759,7 +1830,7 @@ def f1Decomposition(sampleMembers=None,thresholdSFM=0.333,sampleFrequencyMatrix=
         elif tmpf1 > f1:
             f1 = tmpf1
             continue
-    
+
     similarityClusters.sort(key = lambda s: -len(s))
 
     return similarityClusters
@@ -2367,7 +2438,7 @@ def univariate_comparison(subtypes,srv,expressionData,network_activity_diff,n_it
             
     boxplot_dataframe = pd.DataFrame(np.vstack(rows))
     boxplot_dataframe.columns = ["Subtype", "Method", "AUC"]
-    boxplot_dataframe.loc[:,"AUC"] = boxplot_dataframe.loc[:,"AUC"].convert_objects(convert_numeric=True)
+    boxplot_dataframe.loc[:,"AUC"] = pd.to_numeric(boxplot_dataframe.loc[:,"AUC"],errors='coerce')
     
     sns.set(font_scale=1.5,style="whitegrid")
     fig = plt.figure(figsize=(16,4))
@@ -2542,21 +2613,23 @@ def composite_survival_figure(univariate_comparison_df,subtypes,
     # gene expression
     f3_ax00 = fig3.add_subplot(f3_ax0[0, 0])
     f3_ax00.imshow(expressionData.loc[np.hstack(gene_clusters),np.hstack(states)],
-               cmap='bwr',aspect=0.1,vmin=-2,vmax=2)
+               cmap='bwr',aspect=0.1,vmin=-2,vmax=2,interpolation='none')
     f3_ax00.set_yticklabels(list(range(-1,7)))
     f3_ax00.set_ylabel("Genes (thousands)")
     f3_ax00.set_title("Gene expression")
     f3_ax00.set_xlabel("Patients")
-
+    plt.grid(False)
+    
     # network activity
     f3_ax01 = fig3.add_subplot(f3_ax0[0, 1])
     f3_ax01.imshow(network_activity_diff.loc[np.hstack(gene_clusters),np.hstack(states)],
-               cmap='bwr',aspect=0.1)
+               cmap='bwr',aspect=0.1,interpolation='none')
     f3_ax01.set_xlabel("Patients")
     f3_ax01.set_title("Network activity")
     f3_ax01.set_yticklabels(list(range(-1,7)))
     f3_ax01.set_ylabel("Genes (thousands)")
-
+    plt.grid(False)
+    
     # Boxplots
     f3_ax1 = fig3.add_subplot(gs[2, :])
     f3_ax1.set_xlabel("")
@@ -2652,8 +2725,8 @@ def composite_survival_figure(univariate_comparison_df,subtypes,
     import string
     axs = [f3_ax00,f3_ax01,f3_ax1,f3_ax2]
     for n, ax in enumerate(axs):  
-        ax.text(-0.1, 1.00, string.ascii_uppercase[n], transform=ax.transAxes, 
-                size=18, weight='bold')
+        ax.text(-0.1, 1.00, string.ascii_lowercase[n], transform=ax.transAxes, 
+                size=24, weight='bold')
     
     if results_directory is not None:
         plt.savefig(os.path.join(results_directory,"UnivariateSurvival.pdf"),bbox_inches="tight")
@@ -4001,15 +4074,15 @@ def parallelSurvivalAnalysis(expressionDf,survivalData,numCores=5):
 #        if color is not None:
 #            if subplots is True:
 #                ax = plt.gca()
-#                ax.step(duration,kme,color=color[i],LineWidth=lw,alpha=alpha)
+#                ax.step(duration,kme,color=color[i],linewidth=lw,alpha=alpha)
 #            elif subplots is False:
-#                plt.step(duration,kme,color=color[i],LineWidth=lw,alpha=alpha)
+#                plt.step(duration,kme,color=color[i],linewidth=lw,alpha=alpha)
 #        elif color is None:
 #            if subplots is True:
 #                ax = plt.gca()
-#                ax.step(duration,kme,LineWidth=lw,alpha=alpha)
+#                ax.step(duration,kme,linewidth=lw,alpha=alpha)
 #            elif subplots is False:
-#                plt.step(duration,kme,LineWidth=lw,alpha=alpha)       
+#                plt.step(duration,kme,linewidth=lw,alpha=alpha)       
 #
 #        #continue
 #
@@ -4033,15 +4106,15 @@ def kmplot(srv,groups,labels,legend=None,title=None,xlim_=None,filename=None,col
         if color is not None:
             if subplots is True:
                 ax = plt.gca()
-                ax.step(duration,kme,color=color[i],LineWidth=lw,alpha=alpha,label=label)
+                ax.step(duration,kme,color=color[i],linewidth=lw,alpha=alpha,label=label)
             elif subplots is False:
-                plt.step(duration,kme,color=color[i],LineWidth=lw,alpha=alpha,label=label)
+                plt.step(duration,kme,color=color[i],linewidth=lw,alpha=alpha,label=label)
         elif color is None:
             if subplots is True:
                 ax = plt.gca()
-                ax.step(duration,kme,LineWidth=lw,alpha=alpha,label=label)
+                ax.step(duration,kme,linewidth=lw,alpha=alpha,label=label)
             elif subplots is False:
-                plt.step(duration,kme,LineWidth=lw,alpha=alpha,label=label)       
+                plt.step(duration,kme,linewidth=lw,alpha=alpha,label=label)       
 
         #continue
     
@@ -5677,10 +5750,10 @@ def iAUC(srv,mtrx,classifier,plot_all=False):
     fpr_means = np.mean(np.vstack(fpr_list),axis=0)
     
     plt.figure()
-    plt.plot(fpr_means,tpr_means+tpr_stds,'-',color="blue",LineWidth=1) 
-    plt.plot(fpr_means,tpr_means-tpr_stds,'-',color="blue",LineWidth=1)
+    plt.plot(fpr_means,tpr_means+tpr_stds,'-',color="blue",linewidth=1) 
+    plt.plot(fpr_means,tpr_means-tpr_stds,'-',color="blue",linewidth=1)
     plt.fill_between(fpr_means, tpr_means-tpr_stds, tpr_means+tpr_stds,color="blue",alpha=0.2)
-    plt.plot(fpr_means,tpr_means,'-k',LineWidth=1.5)
+    plt.plot(fpr_means,tpr_means,'-k',linewidth=1.5)
     plt.plot(np.arange(0,1.01,0.01),np.arange(0,1.01,0.01),"--r") 
     plt.ylim(-0.05,1.05)
     plt.xlim(-0.05,1.05)
@@ -5832,7 +5905,7 @@ def riskStratification(lbls,mtrx,guan_srv,survival_tag,classifier,resultsDirecto
     
     if plot_any is True:
         ax1.fill_between(fpr_means, tpr_means-tpr_stds, tpr_means+tpr_stds,color=[0,0.4,0.6],alpha=0.3)
-        ax1.plot(fpr_means,tpr_means,color=[0,0.4,0.6],LineWidth=1.5)
+        ax1.plot(fpr_means,tpr_means,color=[0,0.4,0.6],linewidth=1.5)
         ax1.plot(np.arange(0,1.01,0.01),np.arange(0,1.01,0.01),"--",color=[0.2,0.2,0.2]) 
         ax1.set_ylim(-0.05,1.05)
         ax1.set_xlim(-0.05,1.05)
@@ -6447,8 +6520,8 @@ def stiched_heatmap2(heatmap_list,cmap = "Blues",results_directory=None):
 
 def composite_figure_4(stitched_list,cmaps,id_table=None,results_directory=None,font_scale=1.5,figsize=(16,15)):
     
-    import warnings  
-    warnings.filterwarnings("ignore")
+    #import warnings  
+    #warnings.filterwarnings("ignore")
     import seaborn as sns
     # Instantiate figure
     sns.set(font_scale = font_scale)
